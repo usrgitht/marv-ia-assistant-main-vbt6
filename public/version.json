@@ -1,0 +1,14 @@
+{
+  "version": "4.0.0",
+  "releaseDate": "2026-05-18",
+  "type": "major",
+  "highlights": [
+    "🧠 Raisonnement étendu (inspiré GPT-5 & Claude) : Marv-IA réfléchit plus profondément",
+    "🗂️ Projets & Espaces (inspiré Claude Projects) : regroupe conversations, fichiers et mémoire par thème",
+    "🔬 Deep Research multimodal (inspiré Gemini 3) : synthèse de sources vérifiées",
+    "💾 Mémoire persistante longue durée (inspiré ChatGPT Memory)",
+    "📧 Domaine email personnalisé pour les envois transactionnels",
+    "🎨 Génération d'images Pro avec Gemini 3 Pro Image Preview",
+    "⚡ Streaming optimisé et latence réduite"
+  ]
+}

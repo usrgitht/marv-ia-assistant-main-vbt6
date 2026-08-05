@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    
+    <!-- Primary SEO -->
+    <title>Marv-IA | Assistant IA intelligent connecté au réel</title>
+    <meta name="description" content="Marv-IA est un assistant IA qui s&#39;adapte à vous : recherche web en temps réel, géolocalisation précise, mémoire persistante et génération d&#39;images. Conçu par Marvens Zamy.">
+    <meta name="keywords" content="assistant IA, intelligence artificielle, chatbot, Marv-IA, Marvens Zamy, AI assistant, recherche web IA, géolocalisation IA, Haïti, assistant personnel">
+    <meta name="author" content="Marvens Zamy" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <link rel="canonical" href="https://marv-ia-companion.lovable.app/" />
+
+    <!-- PWA -->
+    <meta name="theme-color" content="#39FF14" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Marv-IA" />
+    <meta name="application-name" content="Marv-IA" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="apple-touch-icon" href="/marvia-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/png" href="/marvia-icon.png">
+
+    <!-- Open Graph / Facebook / LinkedIn / WhatsApp -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://marv-ia-companion.lovable.app/" />
+    
+    
+    <meta property="og:image" content="https://storage.googleapis.com/gpt-engineer-file-uploads/attachments/og-images/821f72e0-6e34-4d45-a1c0-f93ec7968a43">
+    <meta property="og:image:width" content="1920" />
+    <meta property="og:image:height" content="1080" />
+    <meta property="og:image:alt" content="Marv-IA - Assistant IA intelligent avec cerveau numérique vert néon" />
+    <meta property="og:locale" content="fr_FR" />
+    <meta property="og:site_name" content="Marv-IA" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    
+    
+    <meta name="twitter:image" content="https://storage.googleapis.com/gpt-engineer-file-uploads/attachments/og-images/821f72e0-6e34-4d45-a1c0-f93ec7968a43">
+
+    <!-- JSON-LD Structured Data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "Marv-IA",
+      "url": "https://marv-ia-companion.lovable.app",
+      "description": "Assistant IA intelligent connecté au réel avec recherche web, géolocalisation, mémoire persistante et génération d'images.",
+      "applicationCategory": "UtilitiesApplication",
+      "operatingSystem": "Web",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "author": {
+        "@type": "Person",
+        "name": "Marvens Zamy"
+      },
+      "image": "https://marv-ia-companion.lovable.app/og-image.png",
+      "screenshot": "https://marv-ia-companion.lovable.app/og-image.png",
+      "featureList": [
+        "Recherche web en temps réel",
+        "Géolocalisation GPS haute précision",
+        "Mémoire persistante personnalisée",
+        "Génération d'images par IA",
+        "Reconnaissance vocale",
+        "Analyse d'images",
+        "Multi-langues (Français, Créole, Anglais)"
+      ],
+      "inLanguage": ["fr", "ht", "en"]
+    }
+    </script>
+    
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  <meta property="og:title" content="Marv-IA | Assistant IA intelligent connecté au réel">
+  <meta name="twitter:title" content="Marv-IA | Assistant IA intelligent connecté au réel">
+  <meta property="og:description" content="Marv-IA est un assistant IA qui s&#39;adapte à vous : recherche web en temps réel, géolocalisation précise, mémoire persistante et génération d&#39;images. Conçu par Marvens Zamy.">
+  <meta name="twitter:description" content="Marv-IA est un assistant IA qui s&#39;adapte à vous : recherche web en temps réel, géolocalisation précise, mémoire persistante et génération d&#39;images. Conçu par Marvens Zamy.">
+</head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      (function() {
+        var isInIframe = false;
+        try { isInIframe = window.self !== window.top; } catch(e) { isInIframe = true; }
+        var isPreview = window.location.hostname.includes('id-preview--') || window.location.hostname.includes('lovableproject.com');
+        if (isPreview || isInIframe) {
+          if (navigator.serviceWorker) {
+            navigator.serviceWorker.getRegistrations().then(function(regs) {
+              regs.forEach(function(r) { r.unregister(); });
+            });
+          }
+        } else if ('serviceWorker' in navigator) {
+          window.addEventListener('load', function() {
+            navigator.serviceWorker.register('/sw.js').catch(function() {});
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>

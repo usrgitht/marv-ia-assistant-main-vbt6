@@ -1,0 +1,969 @@
+import React, { useState, useCallback, useRef, useEffect } from "react";
+import {
+  ArrowLeft, Play, Eye, Code2, Terminal, Sparkles, Send, Mic, StopCircle,
+  Download, RotateCcw, MessageSquare, Files, Search, Settings,
+  PanelBottomOpen, PanelBottomClose, ChevronRight, Copy, RefreshCw,
+  FolderOpen, X, Plus, Maximize2, Minimize2, Globe, Zap, Paperclip,
+  Github, ExternalLink, Share, Loader2
+} from "lucide-react";
+import CodeEditor from "./CodeEditor";
+import SymbolBar from "./SymbolBar";
+import LivePreview from "./LivePreview";
+import ConsolePanel, { type ConsoleMessage } from "./ConsolePanel";
+import FileTabs, { type FileTab } from "./FileTabs";
+import FileExplorer from "./FileExplorer";
+import StatusBar from "./StatusBar";
+import { executePython } from "./pythonSimulator";
+import ReactMarkdown from "react-markdown";
+import { streamChat } from "@/lib/marvia-api";
+import { useSettings } from "@/contexts/SettingsContext";
+import { useVoice } from "@/hooks/useVoice";
+import { toast } from "sonner";
+
+const DEFAULT_FILES: FileTab[] = [
+  { id: "html", name: "index.html", language: "html", content: '<!-- Écrivez votre HTML ici -->\n<div class="container">\n  <h1>Hello Marv-IA 🚀</h1>\n  <p>Bienvenue dans le Mode IDE</p>\n  <button onclick="greet()">Cliquez-moi</button>\n</div>' },
+  { id: "css", name: "style.css", language: "css", content: '/* Styles */\n.container {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  justify-content: center;\n  min-height: 80vh;\n  gap: 16px;\n  font-family: system-ui, sans-serif;\n}\n\nh1 {\n  font-size: 2rem;\n  background: linear-gradient(135deg, #007BFF, #39FF14);\n  -webkit-background-clip: text;\n  -webkit-text-fill-color: transparent;\n}\n\nbutton {\n  padding: 10px 24px;\n  background: #007BFF;\n  color: white;\n  border: none;\n  border-radius: 8px;\n  font-size: 1rem;\n  cursor: pointer;\n  transition: transform 0.2s;\n}\n\nbutton:hover {\n  transform: scale(1.05);\n}' },
+  { id: "js", name: "script.js", language: "javascript", content: '// JavaScript\nfunction greet() {\n  console.log("Bonjour depuis Marv-IA IDE ! 🎉");\n  document.querySelector("h1").textContent = "Ça marche !";\n}' },
+  { id: "py", name: "main.py", language: "python", content: '# Python - Simulateur Marv-IA\n\nnom = "Marv-IA"\nversion = 2.0\nactif = True\n\nprint(f"Bienvenue dans {nom} v{version}")\nprint(f"Statut: {actif}")\n\nfor i in range(5):\n    if i % 2 == 0:\n        print(f"{i} est pair")\n    else:\n        print(f"{i} est impair")\n\ndef fibonacci(n):\n    if n <= 1:\n        return n\n    a = 0\n    b = 1\n    for i in range(2, n + 1):\n        temp = a + b\n        a = b\n        b = temp\n    return b\n\nprint(f"Fibonacci(10) = {fibonacci(10)}")\n\nfruits = ["pomme", "banane", "orange"]\nfruits.append("kiwi")\nprint(f"Fruits: {fruits}")\nprint(f"Nombre: {len(fruits)}")\n' },
+];
+
+type ChatMsg = { id: string; role: "user" | "assistant"; content: string };
+
+// Activity bar items
+type ActivityItem = "explorer" | "search" | "ai" | "none";
+// Bottom panel
+type BottomPanel = "terminal" | "preview" | "none";
+// Mobile tabs
+type MobileTab = "editor" | "preview" | "terminal" | "ai";
+
+interface IDEViewProps {
+  onBack: () => void;
+  planId?: "starter" | "pro" | "ultra";
+}
+
+export default function IDEView({ onBack, planId = "starter" }: IDEViewProps) {
+  const { aiModel, responseStyle, ideAutoSave, ideTheme } = useSettings();
+  const isDark = ideTheme === "dark";
+  const { startListening } = useVoice();
+
+  // Plan-specific IDE features
+  const planConfig = {
+    starter: {
+      label: "Starter IDE",
+      model: "google/gemini-2.5-flash" as const,
+      accentColor: "#3B82F6",
+      maxFiles: 5,
+      hasGitHub: false,
+      hasLiveHost: false,
+      hasTerminal: true,
+      hasAI: true,
+    },
+    pro: {
+      label: "Pro IDE",
+      model: "google/gemini-2.5-pro" as const,
+      accentColor: "#F59E0B",
+      maxFiles: 20,
+      hasGitHub: true,
+      hasLiveHost: true,
+      hasTerminal: true,
+      hasAI: true,
+    },
+    ultra: {
+      label: "Ultra IDE",
+      model: "google/gemini-2.5-pro" as const,
+      accentColor: "#A855F7",
+      maxFiles: 100,
+      hasGitHub: true,
+      hasLiveHost: true,
+      hasTerminal: true,
+      hasAI: true,
+    },
+  };
+  const pc = planConfig[planId];
+
+  const [files, setFiles] = useState<FileTab[]>(() => {
+    const saved = localStorage.getItem("marvia-ide-files");
+    if (saved) {
+      try { return JSON.parse(saved); } catch { /* ignore */ }
+    }
+    return DEFAULT_FILES;
+  });
+  const [activeFileId, setActiveFileId] = useState("html");
+
+  // Desktop panels
+  const [activityPanel, setActivityPanel] = useState<ActivityItem>("explorer");
+  const [bottomPanel, setBottomPanel] = useState<BottomPanel>("terminal");
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(35); // percentage
+  const [sidebarWidth, setSidebarWidth] = useState(220);
+  const [showPreviewSplit, setShowPreviewSplit] = useState(true);
+  const [previewFullscreen, setPreviewFullscreen] = useState(false);
+
+  // Mobile
+  const [mobileTab, setMobileTab] = useState<MobileTab>("editor");
+  const [mobileExplorerOpen, setMobileExplorerOpen] = useState(false);
+
+  // Console
+  const [consoleMessages, setConsoleMessages] = useState<ConsoleMessage[]>([]);
+
+  // Chat
+  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const stopListeningRef = useRef<(() => void) | null>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-save status
+  const [lastSaved, setLastSaved] = useState<string>("");
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const handleCopilotFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const textTypes = ["text/", "application/json", "application/xml", "application/javascript", "application/typescript"];
+    if (/\.(zip)$/i.test(file.name) || file.type === "application/zip" || file.type === "application/x-zip-compressed") {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const buffer = reader.result as ArrayBuffer;
+          const view = new DataView(buffer);
+          const fileNames: string[] = [];
+          let offset = 0;
+          while (offset < view.byteLength - 4) {
+            const sig = view.getUint32(offset, true);
+            if (sig !== 0x04034b50) break;
+            const nameLen = view.getUint16(offset + 26, true);
+            const extraLen = view.getUint16(offset + 28, true);
+            const compSize = view.getUint32(offset + 18, true);
+            const name = new TextDecoder().decode(new Uint8Array(buffer, offset + 30, nameLen));
+            if (!name.endsWith("/")) fileNames.push(name);
+            offset += 30 + nameLen + extraLen + compSize;
+          }
+          const listing = fileNames.length > 0
+            ? fileNames.slice(0, 50).join("\n") + (fileNames.length > 50 ? `\n... et ${fileNames.length - 50} autres fichiers` : "")
+            : "(archive vide ou format non lisible)";
+          setChatInput(prev => prev + (prev ? "\n" : "") + `📎 ${file.name} (ZIP - ${fileNames.length} fichiers):\n\`\`\`\n${listing}\n\`\`\``);
+          toast.success(`📎 ${file.name} ajouté`);
+        } catch {
+          setChatInput(prev => prev + (prev ? "\n" : "") + `📎 ${file.name} (archive ZIP jointe)`);
+          toast.success(`📎 ${file.name} ajouté`);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else if (textTypes.some(t => file.type.startsWith(t)) || /\.(txt|md|csv|json|xml|html|css|js|ts|py|java|c|cpp|rb|go|rs|sql|yaml|yml|toml|ini|log|sh|bat)$/i.test(file.name)) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const content = reader.result as string;
+        setChatInput(prev => prev + (prev ? "\n" : "") + `📎 ${file.name}:\n\`\`\`\n${content.slice(0, 8000)}\n\`\`\``);
+        toast.success(`📎 ${file.name} ajouté`);
+      };
+      reader.readAsText(file);
+    } else {
+      toast.error("Type de fichier non supporté.");
+    }
+    e.target.value = "";
+  };
+
+  const activeFile = files.find(f => f.id === activeFileId) || files[0];
+  const htmlFile = files.find(f => f.language === "html");
+  const cssFile = files.find(f => f.language === "css");
+  const jsFile = files.find(f => f.language === "javascript");
+  const pyFile = files.find(f => f.language === "python");
+  const isPythonActive = activeFile.language === "python";
+
+  const updateFileContent = useCallback((content: string) => {
+    setFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, content, modified: true } : f));
+  }, [activeFileId]);
+
+  // Auto-save
+  useEffect(() => {
+    if (!ideAutoSave) return;
+    const interval = setInterval(() => {
+      setIsSyncing(true);
+      localStorage.setItem("marvia-ide-files", JSON.stringify(files));
+      setFiles(prev => prev.map(f => ({ ...f, modified: false })));
+      setLastSaved(new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }));
+      setTimeout(() => setIsSyncing(false), 800);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [files, ideAutoSave]);
+
+  const handleConsoleMessage = useCallback((msg: ConsoleMessage) => {
+    setConsoleMessages(prev => [...prev.slice(-200), msg]);
+  }, []);
+
+  const handleAddFile = () => {
+    if (files.length >= pc.maxFiles) {
+      toast.error(`Limite de ${pc.maxFiles} fichiers pour le plan ${pc.label}`);
+      return;
+    }
+    const id = crypto.randomUUID();
+    const newFile: FileTab = { id, name: `fichier-${files.length + 1}.js`, language: "javascript", content: "// Nouveau fichier\n" };
+    setFiles(prev => [...prev, newFile]);
+    setActiveFileId(id);
+  };
+
+  const handleCloseFile = (id: string) => {
+    if (files.length <= 1) return;
+    setFiles(prev => prev.filter(f => f.id !== id));
+    if (activeFileId === id) setActiveFileId(files[0].id === id ? files[1].id : files[0].id);
+  };
+
+  const handleInjectCode = (code: string, lang?: string) => {
+    let targetFile = activeFile;
+    if (lang === "python" || (code.includes("def ") && code.includes("print("))) {
+      targetFile = pyFile || activeFile;
+    } else if (lang === "html" || (code.includes("<") && code.includes(">") && (code.includes("<div") || code.includes("<h1")))) {
+      targetFile = htmlFile || activeFile;
+    } else if (lang === "css" || (code.includes("{") && (code.includes("color:") || code.includes("display:")))) {
+      targetFile = cssFile || activeFile;
+    } else {
+      targetFile = jsFile || activeFile;
+    }
+    setFiles(prev => prev.map(f => f.id === targetFile.id ? { ...f, content: code } : f));
+    setActiveFileId(targetFile.id);
+    setMobileTab("editor");
+    toast.success(`Code injecté dans ${targetFile.name}`);
+  };
+
+  const handleRunPython = useCallback(() => {
+    const pythonFile = files.find(f => f.language === "python");
+    if (!pythonFile) { toast.error("Aucun fichier Python trouvé"); return; }
+    const now = () => new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const results = executePython(pythonFile.content);
+    const newMessages: ConsoleMessage[] = results.map(r => ({ type: r.type, text: r.text, time: now() }));
+    setConsoleMessages(prev => [...prev, ...newMessages]);
+    setBottomPanel("terminal");
+    setMobileTab("terminal");
+    toast.success("Python exécuté !");
+  }, [files]);
+
+  const handleTerminalCommand = useCallback((cmd: string) => {
+    const now = new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const addMsg = (type: "log" | "error" | "info" | "warn", text: string) => {
+      setConsoleMessages(prev => [...prev, { type, text, time: now }]);
+    };
+    addMsg("info", `$ ${cmd}`);
+
+    const lower = cmd.toLowerCase().trim();
+    const parts = lower.split(/\s+/);
+    const command = parts[0];
+
+    switch (command) {
+      case "clear": case "cls":
+        setConsoleMessages([]);
+        return;
+      case "help":
+        ["Commandes disponibles :",
+         "  clear/cls       — Effacer le terminal",
+         "  ls/dir          — Lister les fichiers",
+         "  cat <fichier>   — Afficher le contenu",
+         "  touch <nom>     — Créer un fichier",
+         "  rm <fichier>    — Supprimer un fichier",
+         "  run / python    — Exécuter le Python",
+         "  node <fichier>  — Exécuter du JS",
+         "  export          — Exporter le projet",
+         "  date            — Date et heure",
+         "  echo <text>     — Afficher du texte",
+         "  whoami          — Utilisateur",
+         "  pwd             — Répertoire courant",
+         "  uptime          — Temps de session",
+         "  wc <fichier>    — Compter les lignes",
+         "  grep <mot>      — Chercher dans les fichiers",
+         "  version         — Version de l'IDE",
+        ].forEach(l => addMsg("log", l));
+        return;
+      case "ls": case "dir":
+        addMsg("log", `total ${files.length}`);
+        files.forEach(f => {
+          const size = new Blob([f.content]).size;
+          addMsg("log", `  -rw-r--r--  ${String(size).padStart(6)} B  📄 ${f.name}`);
+        });
+        return;
+      case "cat": {
+        const fname = cmd.slice(4).trim();
+        const file = files.find(f => f.name === fname);
+        if (file) addMsg("log", file.content);
+        else addMsg("error", `cat: ${fname}: Fichier introuvable`);
+        return;
+      }
+      case "touch": {
+        const newName = cmd.slice(6).trim();
+        if (!newName) { addMsg("error", "touch: nom de fichier requis"); return; }
+        const ext = newName.split(".").pop() || "js";
+        const langMap: Record<string, string> = { html: "html", css: "css", js: "javascript", ts: "typescript", py: "python" };
+        const id = crypto.randomUUID();
+        setFiles(prev => [...prev, { id, name: newName, language: langMap[ext] || "javascript", content: `// ${newName}\n` }]);
+        addMsg("log", `Fichier créé: ${newName}`);
+        return;
+      }
+      case "rm": {
+        const rmName = cmd.slice(3).trim();
+        const rmFile = files.find(f => f.name === rmName);
+        if (!rmFile) { addMsg("error", `rm: ${rmName}: Fichier introuvable`); return; }
+        if (files.length <= 1) { addMsg("error", "rm: impossible de supprimer le dernier fichier"); return; }
+        handleCloseFile(rmFile.id);
+        setFiles(prev => prev.filter(f => f.name !== rmName));
+        addMsg("log", `Supprimé: ${rmName}`);
+        return;
+      }
+      case "run": case "python":
+        handleRunPython();
+        return;
+      case "node": {
+        const nodeFname = cmd.slice(5).trim();
+        const nodeFile = files.find(f => f.name === nodeFname);
+        if (!nodeFile) { addMsg("error", `node: ${nodeFname}: Fichier introuvable`); return; }
+        try {
+          const result = new Function(nodeFile.content)();
+          if (result !== undefined) addMsg("log", String(result));
+          addMsg("info", `✓ ${nodeFname} exécuté`);
+        } catch (e: any) {
+          addMsg("error", e.message);
+        }
+        return;
+      }
+      case "export":
+        handleExport();
+        return;
+      case "date":
+        addMsg("log", new Date().toLocaleString("fr-FR", { dateStyle: "full", timeStyle: "medium" }));
+        return;
+      case "whoami":
+        addMsg("log", "developer@marvia-ide");
+        return;
+      case "pwd":
+        addMsg("log", "/home/developer/marvia-project");
+        return;
+      case "uptime": {
+        const mins = Math.floor(performance.now() / 60000);
+        addMsg("log", `Session active depuis ${mins} minute${mins > 1 ? "s" : ""}`);
+        return;
+      }
+      case "wc": {
+        const wcName = cmd.slice(3).trim();
+        const wcFile = files.find(f => f.name === wcName);
+        if (!wcFile) { addMsg("error", `wc: ${wcName}: Fichier introuvable`); return; }
+        const lines = wcFile.content.split("\n").length;
+        const words = wcFile.content.split(/\s+/).filter(Boolean).length;
+        const chars = wcFile.content.length;
+        addMsg("log", `  ${lines} lignes  ${words} mots  ${chars} caractères  ${wcName}`);
+        return;
+      }
+      case "grep": {
+        const searchTerm = parts[1];
+        if (!searchTerm) { addMsg("error", "grep: terme de recherche requis"); return; }
+        let found = false;
+        files.forEach(f => {
+          f.content.split("\n").forEach((line, i) => {
+            if (line.toLowerCase().includes(searchTerm)) {
+              addMsg("log", `${f.name}:${i + 1}: ${line.trim()}`);
+              found = true;
+            }
+          });
+        });
+        if (!found) addMsg("warn", `Aucun résultat pour '${searchTerm}'`);
+        return;
+      }
+      case "version":
+        addMsg("info", "Marv-IA IDE v3.0 — Terminal Intégré Pro");
+        return;
+      default:
+        break;
+    }
+    // Echo
+    if (lower.startsWith("echo ")) {
+      addMsg("log", cmd.slice(5));
+      return;
+    }
+    // Try JS eval
+    try {
+      const result = new Function(`return (${cmd})`)();
+      addMsg("log", String(result));
+    } catch {
+      addMsg("error", `bash: ${parts[0]}: commande introuvable. Tapez 'help'.`);
+    }
+  }, [files, handleRunPython]);
+
+  const handleExport = () => {
+    const fullHtml = `<!DOCTYPE html>\n<html lang="fr">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>Marv-IA Export</title>\n<style>\n${cssFile?.content || ""}\n</style>\n</head>\n<body>\n${htmlFile?.content || ""}\n<script>\n${jsFile?.content || ""}\n<\/script>\n</body>\n</html>`;
+    const blob = new Blob([fullHtml], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "marvia-project.html";
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("Projet exporté !");
+  };
+
+  // --- GitHub Gist Push ---
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [tempHostUrl, setTempHostUrl] = useState<string | null>(null);
+
+  const handlePushToGitHub = async () => {
+    setIsPublishing(true);
+    try {
+      const gistFiles: Record<string, { content: string }> = {};
+      files.forEach(f => { gistFiles[f.name] = { content: f.content }; });
+      const { supabase } = await import("@/integrations/supabase/client");
+      const { data, error } = await supabase.functions.invoke("github-push", {
+        body: { files: gistFiles, description: "Marv-IA IDE Export" },
+      });
+      if (error) throw new Error(error.message);
+      // If GitHub token is configured → Gist URL
+      if (data?.html_url) {
+        window.open(data.html_url, "_blank");
+        toast.success("🚀 Publié sur GitHub Gist !");
+        return;
+      }
+      // Fallback: no GitHub token → use returned HTML for local blob hosting
+      if (data?.fallback_html) {
+        const blob = new Blob([data.fallback_html], { type: "text/html" });
+        const url = URL.createObjectURL(blob);
+        setTempHostUrl(url);
+        window.open(url, "_blank");
+        toast.info("GitHub non configuré — hébergement local temporaire créé", { duration: 5000 });
+        return;
+      }
+      toast.error("Réponse inattendue du serveur");
+    } catch (e: any) {
+      // Full offline fallback
+      const fullHtml = `<!DOCTYPE html>\n<html lang="fr">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>Marv-IA Export</title>\n<style>\n${cssFile?.content || ""}\n</style>\n</head>\n<body>\n${htmlFile?.content || ""}\n<script>\n${jsFile?.content || ""}\n<\/script>\n</body>\n</html>`;
+      const blob = new Blob([fullHtml], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      setTempHostUrl(url);
+      window.open(url, "_blank");
+      toast.info("Hébergement local temporaire créé (hors-ligne)");
+    } finally {
+      setIsPublishing(false);
+    }
+  };
+
+  const handleTempHost = () => {
+    const fullHtml = `<!DOCTYPE html>\n<html lang="fr">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>Marv-IA Live</title>\n<style>\n${cssFile?.content || ""}\n</style>\n</head>\n<body>\n${htmlFile?.content || ""}\n<script>\n${jsFile?.content || ""}\n<\/script>\n</body>\n</html>`;
+    const blob = new Blob([fullHtml], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    setTempHostUrl(url);
+    window.open(url, "_blank");
+    toast.success("🌐 Hébergement temporaire actif !", { duration: 6000 });
+    navigator.clipboard.writeText(url).catch(() => {});
+  };
+
+
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      if (chatInputRef.current && document.activeElement === chatInputRef.current) {
+        requestAnimationFrame(() => {
+          chatInputRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        });
+      }
+    };
+    vv.addEventListener("resize", onResize);
+    return () => vv.removeEventListener("resize", onResize);
+  }, []);
+
+  const handleVoice = () => {
+    if (isListening) { stopListeningRef.current?.(); setIsListening(false); return; }
+    setIsListening(true);
+    stopListeningRef.current = startListening(
+      (text) => setChatInput(prev => prev + text),
+      () => setIsListening(false)
+    );
+  };
+
+  const sendChat = useCallback(async () => {
+    const trimmed = chatInput.trim();
+    if (!trimmed || isLoading) return;
+
+    const userMsg: ChatMsg = { id: crypto.randomUUID(), role: "user", content: trimmed };
+    setChatMessages(prev => [...prev, userMsg]);
+    setChatInput("");
+    setIsLoading(true);
+
+    const codeContext = files.map(f => `--- ${f.name} ---\n${f.content}`).join("\n\n");
+    
+    let stylePrefix = "";
+    if (responseStyle === "precise") stylePrefix = "[Réponds de manière concise] ";
+    else if (responseStyle === "creative") stylePrefix = "[Réponds de manière détaillée et créative] ";
+
+    const systemMsg = {
+      role: "system" as const,
+      content: `Tu es Marv-IA, un assistant développeur expert intégré dans un IDE professionnel. Tu aides l'utilisateur à coder en HTML, CSS, JavaScript, React et Python.
+
+RÈGLES :
+- Quand tu génères du code, mets-le dans des blocs \`\`\`html, \`\`\`css, \`\`\`javascript, ou \`\`\`python
+- Sois concis et direct
+- Explique brièvement tes choix
+- Si l'utilisateur demande de modifier le code, base-toi sur le code actuel fourni en contexte
+- Tu peux aussi générer des sites complets et des clones d'apps connues
+- Ne dis JAMAIS "en tant qu'IA" ou similaire
+
+CODE ACTUEL DE L'UTILISATEUR :
+${codeContext}`
+    };
+
+    const apiMessages = [
+      systemMsg,
+      ...chatMessages.map(m => ({ role: m.role, content: m.content })),
+      { role: "user" as const, content: stylePrefix + trimmed }
+    ];
+
+    let assistantSoFar = "";
+    const assistantId = crypto.randomUUID();
+
+    await streamChat({
+      messages: apiMessages as any,
+      model: pc.model,
+      onDelta: (chunk) => {
+        assistantSoFar += chunk;
+        setChatMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.id === assistantId) return prev.map(m => m.id === assistantId ? { ...m, content: assistantSoFar } : m);
+          return [...prev, { id: assistantId, role: "assistant", content: assistantSoFar }];
+        });
+        setTimeout(() => chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: "smooth" }), 50);
+      },
+      onDone: () => setIsLoading(false),
+      onError: (err) => {
+        setIsLoading(false);
+        toast.error(err);
+      },
+    });
+  }, [chatInput, isLoading, chatMessages, files, responseStyle]);
+
+  const extractCodeBlocks = (content: string): { lang: string; code: string }[] => {
+    const blocks: { lang: string; code: string }[] = [];
+    const regex = /```(\w+)?\n([\s\S]*?)```/g;
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+      blocks.push({ lang: match[1] || "javascript", code: match[2].trim() });
+    }
+    return blocks;
+  };
+
+  const toggleActivity = (item: ActivityItem) => {
+    setActivityPanel(prev => prev === item ? "none" : item);
+  };
+
+  // ===== RENDER HELPERS =====
+
+  const renderActivityBar = (vertical = true) => {
+    const items = [
+      { id: "explorer" as ActivityItem, icon: Files, label: "Fichiers" },
+      { id: "search" as ActivityItem, icon: Search, label: "Recherche" },
+      { id: "ai" as ActivityItem, icon: Sparkles, label: "IA" },
+    ];
+
+    if (!vertical) return null;
+
+    return (
+      <div className="w-12 flex-shrink-0 bg-[#0B0F15] border-r border-[#1E2433] flex flex-col items-center py-1 gap-0.5">
+        {items.map(({ id, icon: Icon, label }) => (
+          <button
+            key={id}
+            onClick={() => toggleActivity(id)}
+            className={`w-10 h-10 flex items-center justify-center rounded-lg transition-all relative group ${
+              activityPanel === id
+                ? "text-[#E2E8F0] bg-[#1A1F2E]"
+                : "text-[#4A5568] hover:text-[#A0AEC0]"
+            }`}
+            title={label}
+          >
+            {activityPanel === id && (
+              <span className="absolute left-0 top-2 bottom-2 w-[2px] bg-[#007BFF] rounded-r" />
+            )}
+            <Icon className="w-[18px] h-[18px]" />
+          </button>
+        ))}
+
+        <div className="flex-1" />
+
+        <button
+          onClick={() => {}}
+          className="w-10 h-10 flex items-center justify-center text-[#4A5568] hover:text-[#A0AEC0] transition-colors"
+          title="Paramètres"
+        >
+          <Settings className="w-[18px] h-[18px]" />
+        </button>
+      </div>
+    );
+  };
+
+  const renderSidePanel = () => {
+    if (activityPanel === "none") return null;
+
+    return (
+      <div className="flex-shrink-0 border-r border-[#1E2433] overflow-hidden" style={{ width: sidebarWidth }}>
+        {activityPanel === "explorer" && (
+          <FileExplorer
+            files={files.map(f => ({ id: f.id, name: f.name, language: f.language, type: "file" as const }))}
+            activeId={activeFileId}
+            onSelect={(id) => { setActiveFileId(id); setMobileTab("editor"); }}
+            onAdd={handleAddFile}
+          />
+        )}
+        {activityPanel === "search" && (
+          <div className="h-full flex flex-col bg-[#0D1117]">
+            <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.15em] text-[#4A5568]">Recherche</div>
+            <div className="px-3">
+              <div className="flex items-center bg-[#1A1F2E] rounded-md border border-[#1E2433] px-2 py-1.5">
+                <Search className="w-3 h-3 text-[#4A5568] flex-shrink-0 mr-1.5" />
+                <input
+                  placeholder="Rechercher..."
+                  className="bg-transparent text-[11px] text-[#E2E8F0] placeholder:text-[#3D4450] outline-none flex-1"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+        {activityPanel === "ai" && renderAIPanel()}
+      </div>
+    );
+  };
+
+  const renderAIPanel = () => (
+    <div className="flex flex-col h-full bg-[#0D1117]">
+      <div className="px-3 py-2 border-b border-[#1E2433] flex items-center gap-2 flex-shrink-0">
+        <Sparkles className="w-3.5 h-3.5 text-[#007BFF]" />
+        <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-[0.12em] flex-1">Marv-IA Copilot</span>
+        <div className="flex items-center gap-0.5 text-[9px] text-[#39FF14] bg-[#39FF14]/10 px-1.5 py-0.5 rounded">
+          <Zap className="w-2.5 h-2.5" />
+          <span>En ligne</span>
+        </div>
+      </div>
+
+      <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide px-3 py-2 space-y-3">
+        {chatMessages.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-full space-y-3 py-8">
+            <div className="w-12 h-12 rounded-xl bg-[#007BFF]/10 flex items-center justify-center">
+              <Sparkles className="w-6 h-6 text-[#007BFF]" />
+            </div>
+            <p className="text-[11px] text-[#4A5568] text-center px-4 leading-relaxed">
+              Demandez-moi de générer du code, cloner un site, ou résoudre un bug.
+            </p>
+            <div className="flex flex-wrap gap-1.5 px-2">
+              {["Clone Google", "Page portfolio", "Todo App", "API fetch"].map(s => (
+                <button
+                  key={s}
+                  onClick={() => setChatInput(s)}
+                  className="text-[10px] px-2 py-1 rounded-md bg-[#1A1F2E] text-[#8B949E] hover:text-[#E2E8F0] hover:bg-[#252D3A] transition-colors border border-[#1E2433]"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {chatMessages.map((msg) => (
+          <div key={msg.id} className={msg.role === "user" ? "ml-6" : "mr-1"}>
+            <div className={`rounded-xl px-3 py-2 text-[12px] leading-relaxed ${
+              msg.role === "user"
+                ? "bg-[#007BFF] text-white rounded-br-sm"
+                : "bg-[#161B22] text-[#E2E8F0] rounded-bl-sm border border-[#1E2433]"
+            }`}>
+              <div className="prose prose-sm prose-invert max-w-none [&_p]:mb-1 [&_pre]:my-1.5 [&_pre]:rounded-lg [&_pre]:bg-[#0A0E14] [&_pre]:border [&_pre]:border-[#1E2433] [&_code]:text-[10px]">
+                <ReactMarkdown>{msg.content}</ReactMarkdown>
+              </div>
+              {msg.role === "assistant" && extractCodeBlocks(msg.content).length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-[#1E2433]">
+                  {extractCodeBlocks(msg.content).map((block, i) => (
+                    <button
+                      key={i}
+                      onClick={() => handleInjectCode(block.code, block.lang)}
+                      className="flex items-center gap-1 text-[10px] bg-[#007BFF]/10 text-[#007BFF] px-2 py-1 rounded-md hover:bg-[#007BFF]/20 transition-colors font-medium border border-[#007BFF]/20"
+                    >
+                      <Copy className="w-2.5 h-2.5" />
+                      Injecter {block.lang}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        {isLoading && chatMessages[chatMessages.length - 1]?.role === "user" && (
+          <div className="mr-1">
+            <div className="bg-[#161B22] rounded-xl rounded-bl-sm px-3 py-2.5 border border-[#1E2433] inline-flex items-center gap-2">
+              <div className="flex gap-1">
+                <span className="w-1.5 h-1.5 bg-[#007BFF] rounded-full" style={{ animation: "typing-dot 1.4s infinite 0s" }} />
+                <span className="w-1.5 h-1.5 bg-[#007BFF] rounded-full" style={{ animation: "typing-dot 1.4s infinite 0.2s" }} />
+                <span className="w-1.5 h-1.5 bg-[#007BFF] rounded-full" style={{ animation: "typing-dot 1.4s infinite 0.4s" }} />
+              </div>
+              <span className="text-[10px] text-[#4A5568]">Génération...</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="p-2 border-t border-[#1E2433] flex-shrink-0">
+        <div className="flex items-end gap-1.5 bg-[#161B22] rounded-lg px-3 py-2 border border-[#1E2433]">
+          <textarea
+            ref={chatInputRef}
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
+            onFocus={(e) => {
+              setTimeout(() => e.target.scrollIntoView({ behavior: "smooth", block: "center" }), 300);
+            }}
+            placeholder="Demandez du code..."
+            rows={1}
+            className="flex-1 bg-transparent text-[#E2E8F0] placeholder:text-[#3D4450] resize-none outline-none text-[12px] max-h-20 py-0.5"
+            style={{ minHeight: "20px" }}
+          />
+          <label className="flex-shrink-0 cursor-pointer text-[#4A5568] hover:text-[#007BFF] transition-colors" title="Joindre un fichier">
+            <Paperclip className="w-4 h-4" />
+            <input type="file" accept=".txt,.md,.csv,.json,.xml,.html,.css,.js,.ts,.py,.java,.c,.cpp,.rb,.go,.rs,.sql,.yaml,.yml,.toml,.ini,.log,.sh,.bat,.pdf,.zip,image/*" className="hidden" onChange={handleCopilotFileUpload} />
+          </label>
+          <button onClick={handleVoice} className={`flex-shrink-0 transition-colors ${isListening ? "text-red-400" : "text-[#4A5568] hover:text-[#007BFF]"}`}>
+            {isListening ? <StopCircle className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+          </button>
+          <button
+            onClick={sendChat}
+            disabled={isLoading || !chatInput.trim()}
+            className="flex-shrink-0 w-7 h-7 bg-[#007BFF] text-white rounded-lg flex items-center justify-center disabled:opacity-30 hover:bg-[#0069D9] transition-all"
+          >
+            <Send className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ===== MAIN RENDER =====
+  return (
+    <div className="flex flex-col h-screen select-none" style={{ background: isDark ? "#0A0E14" : "#FFFFFF" }}>
+      {/* ===== HEADER BAR ===== */}
+      <div className={`flex items-center gap-1.5 px-2 py-1.5 border-b flex-shrink-0 ${isDark ? "border-[#1E2433] bg-[#0D1117]" : "border-[#D0D7DE] bg-[#F6F8FA]"}`} style={{ minHeight: "38px" }}>
+        <button onClick={onBack} className={`p-1 rounded ${isDark ? "text-[#4A5568] hover:text-[#E2E8F0] hover:bg-[#1A1F2E]" : "text-[#656D76] hover:text-[#24292F] hover:bg-[#E8EAED]"}`} >
+          <ArrowLeft className="w-4 h-4" />
+        </button>
+
+        {/* Breadcrumb */}
+        <div className="flex items-center gap-1 flex-1 min-w-0 text-[11px]">
+          <Code2 className="w-3.5 h-3.5 flex-shrink-0" style={{ color: pc.accentColor }} />
+          <span className={isDark ? "text-[#4A5568]" : "text-[#656D76]"}>{pc.label}</span>
+          <ChevronRight className={`w-3 h-3 ${isDark ? "text-[#3D4450]" : "text-[#8C959F]"}`} />
+          <span className={`truncate ${isDark ? "text-[#8B949E]" : "text-[#24292F]"}`}>{activeFile.name}</span>
+        </div>
+
+        {/* Header actions */}
+        <div className="flex items-center gap-0.5">
+          {isPythonActive && (
+            <button onClick={handleRunPython} className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-[#39FF14]/10 text-[#39FF14] rounded-md hover:bg-[#39FF14]/20 transition-colors border border-[#39FF14]/20">
+              <Play className="w-3 h-3" />
+              Run
+            </button>
+          )}
+          {!isPythonActive && (
+            <button onClick={() => setFiles(prev => [...prev])} className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-[#007BFF]/10 text-[#007BFF] rounded-md hover:bg-[#007BFF]/20 transition-colors border border-[#007BFF]/20">
+              <RefreshCw className="w-3 h-3" />
+              Recharger
+            </button>
+          )}
+          <button
+            onClick={() => setShowPreviewSplit(!showPreviewSplit)}
+            className={`p-1.5 rounded transition-colors hidden md:flex ${showPreviewSplit ? "text-[#007BFF] bg-[#007BFF]/10" : "text-[#4A5568] hover:text-[#A0AEC0]"}`}
+            title="Aperçu côte à côte"
+          >
+            <Eye className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => setBottomPanel(prev => prev === "none" ? "terminal" : "none")}
+            className={`p-1.5 rounded transition-colors hidden md:flex ${bottomPanel !== "none" ? "text-[#007BFF] bg-[#007BFF]/10" : "text-[#4A5568] hover:text-[#A0AEC0]"}`}
+            title="Terminal"
+          >
+            {bottomPanel !== "none" ? <PanelBottomClose className="w-3.5 h-3.5" /> : <PanelBottomOpen className="w-3.5 h-3.5" />}
+          </button>
+          {pc.hasLiveHost && (
+            <button
+              onClick={handleTempHost}
+              className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-[#39FF14]/10 text-[#39FF14] rounded-md hover:bg-[#39FF14]/20 transition-colors border border-[#39FF14]/20 hidden md:flex"
+              title="Hébergement temporaire"
+            >
+              <ExternalLink className="w-3 h-3" />
+              Live
+            </button>
+          )}
+          {pc.hasGitHub && (
+            <button
+              onClick={handlePushToGitHub}
+              disabled={isPublishing}
+              className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-[#8B5CF6]/10 text-[#8B5CF6] rounded-md hover:bg-[#8B5CF6]/20 transition-colors border border-[#8B5CF6]/20 hidden md:flex disabled:opacity-50"
+              title="Push vers GitHub"
+            >
+              {isPublishing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Github className="w-3 h-3" />}
+              GitHub
+            </button>
+          )}
+          <button onClick={handleExport} className="p-1.5 text-[#4A5568] hover:text-[#A0AEC0] transition-colors rounded hover:bg-[#1A1F2E]" title="Exporter">
+            <Download className="w-3.5 h-3.5" />
+          </button>
+          <button onClick={() => { setFiles(DEFAULT_FILES); localStorage.removeItem("marvia-ide-files"); }} className="p-1.5 text-[#4A5568] hover:text-[#A0AEC0] transition-colors rounded hover:bg-[#1A1F2E]" title="Réinitialiser">
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* ===== DESKTOP LAYOUT ===== */}
+      <div className="hidden md:flex flex-1 overflow-hidden">
+        {/* Activity Bar */}
+        {renderActivityBar()}
+
+        {/* Side Panel */}
+        {renderSidePanel()}
+
+        {/* Main Editor Area */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* File Tabs */}
+          <FileTabs files={files} activeId={activeFileId} onSelect={setActiveFileId} onClose={handleCloseFile} onAdd={handleAddFile} />
+
+          {/* Editor + Preview Split */}
+          <div className="flex-1 flex overflow-hidden" style={{ height: bottomPanel !== "none" ? `${100 - bottomPanelHeight}%` : "100%" }}>
+            {/* Code Editor */}
+            <div className={`overflow-hidden ${showPreviewSplit ? "flex-1" : "w-full"}`}>
+              <CodeEditor value={activeFile.content} onChange={updateFileContent} language={activeFile.language} ideTheme={ideTheme} />
+            </div>
+
+            {/* Preview Panel */}
+            {showPreviewSplit && (
+              <div className={`flex flex-col border-l border-[#1E2433] ${previewFullscreen ? "fixed inset-0 z-50 bg-[#0A0E14]" : "w-[45%] flex-shrink-0"}`}>
+                <div className="flex items-center px-3 py-1 border-b border-[#1E2433] bg-[#0D1117] flex-shrink-0 gap-2">
+                  <Globe className="w-3 h-3 text-[#4A5568]" />
+                  <div className="flex-1 flex items-center bg-[#1A1F2E] rounded px-2 py-0.5 text-[10px] text-[#4A5568]">
+                    <span className="truncate">localhost:3000/index.html</span>
+                  </div>
+                  <button onClick={() => setFiles(prev => [...prev])} className="text-[#4A5568] hover:text-[#A0AEC0] transition-colors">
+                    <RefreshCw className="w-3 h-3" />
+                  </button>
+                  <button onClick={() => setPreviewFullscreen(!previewFullscreen)} className="text-[#4A5568] hover:text-[#A0AEC0] transition-colors">
+                    {previewFullscreen ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
+                  </button>
+                </div>
+                <div className="flex-1 overflow-hidden">
+                  <LivePreview html={htmlFile?.content || ""} css={cssFile?.content || ""} js={jsFile?.content || ""} onConsoleMessage={handleConsoleMessage} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Bottom Panel (Terminal) */}
+          {bottomPanel !== "none" && (
+            <div className="border-t border-[#1E2433]" style={{ height: `${bottomPanelHeight}%` }}>
+              <ConsolePanel messages={consoleMessages} onClear={() => setConsoleMessages([])} onCommand={handleTerminalCommand} ideTheme={ideTheme} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ===== MOBILE LAYOUT ===== */}
+      <div className="flex md:hidden flex-1 flex-col overflow-hidden">
+        {/* Mobile file explorer overlay */}
+        {mobileExplorerOpen && (
+          <div className="absolute inset-0 z-40 flex" style={{ top: "38px" }}>
+            <div className="w-64 bg-[#0D1117] border-r border-[#1E2433] shadow-2xl h-full">
+              <FileExplorer
+                files={files.map(f => ({ id: f.id, name: f.name, language: f.language, type: "file" as const }))}
+                activeId={activeFileId}
+                onSelect={(id) => { setActiveFileId(id); setMobileExplorerOpen(false); setMobileTab("editor"); }}
+                onAdd={() => { handleAddFile(); setMobileExplorerOpen(false); }}
+              />
+            </div>
+            <div className="flex-1 bg-black/50" onClick={() => setMobileExplorerOpen(false)} />
+          </div>
+        )}
+
+        {/* Mobile file tabs - editor only */}
+        {mobileTab === "editor" && (
+          <FileTabs files={files} activeId={activeFileId} onSelect={setActiveFileId} onClose={handleCloseFile} onAdd={handleAddFile} />
+        )}
+
+        {/* Mobile content */}
+        <div className="flex-1 overflow-hidden">
+          {mobileTab === "editor" && (
+            <>
+              <div className="flex-1 overflow-hidden" style={{ height: "calc(100% - 40px)" }}>
+                <CodeEditor value={activeFile.content} onChange={updateFileContent} language={activeFile.language} ideTheme={ideTheme} />
+              </div>
+              <SymbolBar onInsert={(sym) => updateFileContent(activeFile.content + sym)} ideTheme={ideTheme} />
+            </>
+          )}
+          {mobileTab === "preview" && (
+            <div className="h-full flex flex-col">
+              <div className="flex items-center px-3 py-1 border-b border-[#1E2433] bg-[#0D1117] flex-shrink-0 gap-2">
+                <Globe className="w-3 h-3 text-[#4A5568]" />
+                <div className="flex-1 flex items-center bg-[#1A1F2E] rounded px-2 py-0.5 text-[10px] text-[#4A5568]">
+                  <span className="truncate">localhost:3000</span>
+                </div>
+                <button onClick={() => setFiles(prev => [...prev])} className="text-[#4A5568] hover:text-[#A0AEC0] transition-colors">
+                  <RefreshCw className="w-3 h-3" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <LivePreview html={htmlFile?.content || ""} css={cssFile?.content || ""} js={jsFile?.content || ""} onConsoleMessage={handleConsoleMessage} />
+              </div>
+            </div>
+          )}
+          {mobileTab === "terminal" && (
+            <ConsolePanel messages={consoleMessages} onClear={() => setConsoleMessages([])} onCommand={handleTerminalCommand} ideTheme={ideTheme} />
+          )}
+          {mobileTab === "ai" && renderAIPanel()}
+        </div>
+
+        {/* Mobile bottom tab bar — VS Code style */}
+        <div className={`flex items-center border-t flex-shrink-0 safe-bottom ${isDark ? "bg-[#0B0F15] border-[#1E2433]" : "bg-[#F6F8FA] border-[#D0D7DE]"}`}>
+          {([
+            { id: "editor" as MobileTab, icon: Code2, label: "Éditeur" },
+            { id: "preview" as MobileTab, icon: Globe, label: "Aperçu" },
+            { id: "terminal" as MobileTab, icon: Terminal, label: "Terminal", badge: consoleMessages.length || undefined },
+            { id: "ai" as MobileTab, icon: Sparkles, label: "Copilot", dot: chatMessages.length > 0 },
+          ]).map(({ id, icon: Icon, label, badge, dot }) => (
+            <button
+              key={id}
+              onClick={() => setMobileTab(id)}
+              className={`flex-1 flex flex-col items-center gap-0.5 py-2 transition-all relative ${
+                mobileTab === id ? "text-[#007BFF]" : "text-[#3D4450]"
+              }`}
+            >
+              <div className="relative">
+                <Icon className="w-[18px] h-[18px]" />
+                {badge && badge > 0 && (
+                  <span className="absolute -top-1 -right-2.5 bg-[#007BFF] text-white text-[7px] w-3.5 h-3.5 rounded-full flex items-center justify-center font-bold">
+                    {badge > 99 ? "∞" : badge}
+                  </span>
+                )}
+                {dot && !badge && (
+                  <span className="absolute -top-0.5 -right-1 w-2 h-2 bg-[#39FF14] rounded-full" />
+                )}
+              </div>
+              <span className="text-[9px] font-medium tracking-wide">{label}</span>
+              {mobileTab === id && <span className="absolute top-0 left-1/4 right-1/4 h-[2px] bg-[#007BFF] rounded-full" />}
+            </button>
+          ))}
+          {/* Explorer toggle */}
+          <button
+            onClick={() => setMobileExplorerOpen(!mobileExplorerOpen)}
+            className={`flex flex-col items-center gap-0.5 py-2 px-3 transition-all ${mobileExplorerOpen ? "text-[#007BFF]" : "text-[#3D4450]"}`}
+          >
+            <FolderOpen className="w-[18px] h-[18px]" />
+            <span className="text-[9px] font-medium tracking-wide">Fichiers</span>
+          </button>
+        </div>
+      </div>
+
+      {/* ===== STATUS BAR ===== */}
+      <StatusBar
+        language={activeFile.language}
+        fileName={activeFile.name}
+        lineCount={activeFile.content.split("\n").length}
+        isAutoSave={ideAutoSave}
+        lastSaved={lastSaved}
+        ideTheme={ideTheme}
+        isSyncing={isSyncing}
+      />
+    </div>
+  );
+}
